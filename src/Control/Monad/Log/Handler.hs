@@ -14,6 +14,8 @@ import Network.Google.Logging
        (MonitoredResource, WriteLogEntriesRequestLabels, LogEntry,
         entriesWrite, writeLogEntriesRequest, wlerLogName, wlerLabels,
         wlerResource, wlerEntries)
+import Network.Google.PubSub
+       (PubsubMessage, projectsTopicsPublish, publishRequest, prMessages)
 import Network.Google.Auth.Scope (HasScope', AllowScopes)
 import Network.Google.Env (HasEnv)
 import Control.Monad.Log (BatchingOptions, Handler, withBatchedHandler)
@@ -21,7 +23,8 @@ import Control.Monad.IO.Class (MonadIO(liftIO))
 import Control.Monad.Catch (MonadMask)
 
 
--- | `withGoogleLoggingHandler` creates a new `Handler` for flash logs to <https://cloud.google.com/logging/ Google Logging>
+-- | `withGoogleLoggingHandler` creates a new `Handler` for flash logs to
+-- <https://cloud.google.com/logging/ Google Logging>
 withGoogleLoggingHandler
     :: (HasScope' s '["https://www.googleapis.com/auth/cloud-platform",
                       "https://www.googleapis.com/auth/logging.admin",
@@ -44,8 +47,8 @@ withGoogleLoggingHandler options env logname resource labels =
 -- | method for flash log to <https://cloud.google.com/logging/ Google Logging>
 flushToGoogleLogging
     :: (HasScope' s '["https://www.googleapis.com/auth/cloud-platform",
-                                                "https://www.googleapis.com/auth/logging.admin",
-                                                "https://www.googleapis.com/auth/logging.write"] ~ 'True
+                      "https://www.googleapis.com/auth/logging.admin",
+                      "https://www.googleapis.com/auth/logging.write"] ~ 'True
        ,AllowScopes s
        ,HasEnv s r)
     => r
@@ -77,4 +80,54 @@ flushToGoogleLogging env logname resource labels entries =
                                                             & wlerLabels .~ labels)
                                                             & wlerResource .~ resource)
                                                             & wlerLogName .~ logname))) >>
+              return ()))
+
+
+
+-- | `withGooglePubSubHandler` creates a new `Handler` for flash logs to
+-- <https://cloud.google.com/pubsub/ Google PubSub>
+withGooglePubSubHandler
+    :: (HasScope' s '["https://www.googleapis.com/auth/cloud-platform",
+                      "https://www.googleapis.com/auth/pubsub"] ~ 'True
+       ,AllowScopes s
+       ,HasEnv s r
+       ,MonadIO io
+       ,MonadMask io)
+    => BatchingOptions
+    -> r
+    -> Text
+    -> (Handler io PubsubMessage -> io a)
+    -> io a
+withGooglePubSubHandler options env topic =
+    withBatchedHandler options (flushToGooglePubSub env topic)
+
+
+-- | method for flash log to <https://cloud.google.com/pubsub/ Google PubSub>
+flushToGooglePubSub
+    :: (HasScope' s '["https://www.googleapis.com/auth/cloud-platform",
+                      "https://www.googleapis.com/auth/pubsub"] ~ 'True
+       ,AllowScopes s
+       ,HasEnv s r)
+    => r
+    -> Text
+    -> [PubsubMessage]
+    -> IO ()
+flushToGooglePubSub env topic msgs =
+    runResourceT
+        (runGoogle
+             env
+             (recovering
+                  (exponentialBackoff 15)
+                  [ logRetries
+                        (\(TransportError _) ->
+                              return False)
+                        (\b e rs ->
+                              liftIO (print (defaultLogMsg b e rs)))
+                  , logRetries
+                        (\(ServiceError _) ->
+                              return False)
+                        (\b e rs ->
+                              liftIO (print (defaultLogMsg b e rs)))]
+                  (\_ ->
+                        send (projectsTopicsPublish (publishRequest & prMessages .~ msgs) topic)) >>
               return ()))
