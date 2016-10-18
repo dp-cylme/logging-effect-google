@@ -6,11 +6,14 @@ Collections of different handler for use with MonadLog
 -}
 module Control.Monad.Log.Handler where
 
+import Control.Lens ((&), (.~))
 import Control.Retry (recovering, exponentialBackoff, logRetries, defaultLogMsg)
 import Data.Text (Text)
 import Network.Google (runResourceT, runGoogle, send, Error(TransportError, ServiceError))
 import Network.Google.Logging
-       (MonitoredResource, WriteLogEntriesRequestLabels, LogEntry, entriesWrite, writeLogEntriesRequest)
+       (MonitoredResource, WriteLogEntriesRequestLabels, LogEntry,
+        entriesWrite, writeLogEntriesRequest, wlerLogName, wlerLabels,
+        wlerResource, wlerEntries)
 import Network.Google.Auth.Scope (HasScope', AllowScopes)
 import Network.Google.Env (HasEnv)
 import Control.Monad.Log (BatchingOptions, Handler, withBatchedHandler)
@@ -29,8 +32,8 @@ withGoogleLoggingHandler
        ,MonadMask io)
     => BatchingOptions
     -> r
-    -> Text
-    -> MonitoredResource
+    -> Maybe Text
+    -> Maybe MonitoredResource
     -> Maybe WriteLogEntriesRequestLabels
     -> (Handler io LogEntry -> io a)
     -> io a
@@ -46,8 +49,8 @@ flushToGoogleLogging
        ,AllowScopes s
        ,HasEnv s r)
     => r
-    -> Text
-    -> MonitoredResource
+    -> Maybe Text
+    -> Maybe MonitoredResource
     -> Maybe WriteLogEntriesRequestLabels
     -> [LogEntry]
     -> IO ()
@@ -68,5 +71,10 @@ flushToGoogleLogging env logname resource labels entries =
                         (\b e rs ->
                               liftIO (print (defaultLogMsg b e rs)))]
                   (\_ ->
-                        send (entriesWrite (writeLogEntriesRequest))) >>
+                        send
+                            (entriesWrite
+                                 ((((writeLogEntriesRequest & wlerEntries .~ entries)
+                                                            & wlerLabels .~ labels)
+                                                            & wlerResource .~ resource)
+                                                            & wlerLogName .~ logname))) >>
               return ()))
